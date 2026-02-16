@@ -1,3 +1,14 @@
+from fastapi import FastAPI
+import asyncio
+# ... keep your other imports like telegram ...
+
+app = FastAPI()
+
+@app.get("/")
+def read_root():
+    return {"status": "MicroAnalysis Bot is Running", "platform": "Hugging Face"}
+
+# Your existing Telegram bot logic goes here...
 import os
 import threading
 from flask import Flask
