@@ -1,5 +1,16 @@
 from fastapi import FastAPI
 import asyncio
+# ... your other bot imports ...
+
+app = FastAPI()
+
+@app.get("/")
+def read_root():
+    return {"status": "MicroAnalysis Bot is Running"}
+
+# --- Your Telegram Bot code starts BELOW this line ---
+from fastapi import FastAPI
+import asyncio
 # ... keep your other imports like telegram ...
 
 app = FastAPI()
