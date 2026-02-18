@@ -1,79 +1,81 @@
-from fastapi import FastAPI
-import asyncio
-# ... your other bot imports ...
-
-app = FastAPI()
-
-@app.get("/")
-def read_root():
-    return {"status": "MicroAnalysis Bot is Running"}
-
-# --- Your Telegram Bot code starts BELOW this line ---
-from fastapi import FastAPI
-import asyncio
-# ... keep your other imports like telegram ...
-
-app = FastAPI()
-
-@app.get("/")
-def read_root():
-    return {"status": "MicroAnalysis Bot is Running", "platform": "Hugging Face"}
-
-# Your existing Telegram bot logic goes here...
 import os
-import threading
-from flask import Flask
-from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
-import analysis as logic
+import asyncio
+from fastapi import FastAPI
+from telegram import Update, LabeledPrice
+from telegram.ext import ApplicationBuilder, CommandHandler, PreCheckoutQueryHandler, MessageHandler, filters, ContextTypes
 
-# --- 🏥 HF HEARTBEAT ---
-app = Flask(__name__)
-@app.route('/')
-def health_check(): return "🔬 MicroAnalysis Bot is LIVE."
+import database
+from analysis import MacroStrategist
 
-def run_web():
-    app.run(host="0.0.0.0", port=7860)
+app = FastAPI()
 
-threading.Thread(target=run_web, daemon=True).start()
-# -----------------------
+@app.get("/")
+def health(): return {"status": "Macro Analysis Bot Active"}
+
+# --- Payment Config ---
+STARS_PRICE = 800  # Monthly Premium
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Professional Menu Setup
-    buttons = [
-        [KeyboardButton("📊 Analyze Pair"), KeyboardButton("📰 Market News")],
-        [KeyboardButton("🏦 Fed Macro"), KeyboardButton("💎 Premium")]
-    ]
-    markup = ReplyKeyboardMarkup(buttons, resize_keyboard=True, is_persistent=True)
+    user_id = update.effective_user.id
+    status = database.check_user_status(user_id)
     
-    await update.message.reply_text(
-        "🏛️ **MicroAnalysis Bot Online**\nSelect a data stream below:",
-        reply_markup=markup,
-        parse_mode="Markdown"
+    msg = "Welcome to the **MicroAnalysis Macro Terminal**. 🔬\n\n"
+    if status == "trial":
+        msg += "Your 24-hour Professional Trial is **ACTIVE**."
+    elif status == "expired":
+        msg += "Your trial has expired. Upgrade to Premium for 800 Stars to continue."
+    
+    await update.message.reply_text(msg, parse_mode='Markdown')
+
+async def macro_analysis(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    status = database.check_user_status(user_id)
+    
+    if status == "expired":
+        await send_upgrade_invoice(update, context)
+        return
+
+    symbol = context.args[0].upper() if context.args else "EURUSD"
+    analysis = MacroStrategist.get_market_bias(symbol)
+    chart_path = MacroStrategist.generate_chart(symbol)
+
+    await update.message.reply_photo(
+        photo=open(chart_path, 'rb'),
+        caption=f"**{analysis['symbol']} Analysis**\nPrice: {analysis['price']}\nBias: {analysis['bias']}\n\n_{analysis['interpretation']}_",
+        parse_mode='Markdown'
     )
 
-async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    choice = update.message.text
-    
-    if choice == "📊 Analyze Pair":
-        await update.message.reply_text("Please type the pair (e.g., /analyze EURUSD)")
-    elif choice == "📰 Market News":
-        news = logic.get_latest_news()
-        await update.message.reply_text(news, parse_mode="Markdown")
-    elif choice == "🏦 Fed Macro":
-        macro = logic.get_macro_data()
-        await update.message.reply_text(macro, parse_mode="Markdown")
-    elif choice == "💎 Premium":
-        await update.message.reply_text("Access Institutional Sentiment Data.\n*Coming Soon via Telegram Stars*")
+async def send_upgrade_invoice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await context.bot.send_invoice(
+        chat_id=update.effective_chat.id,
+        title="Premium Macro Access",
+        description="Unlock unlimited professional analysis and charts for 30 days.",
+        payload="premium_subscription",
+        currency="XTR",
+        prices=[LabeledPrice("Monthly Subscription", STARS_PRICE)],
+        provider_token="" # Empty for Telegram Stars
+    )
 
-def main():
-    token = os.environ.get("TELEGRAM_BOT_TOKEN")
-    application = Application.builder().token(token).build()
+async def precheckout_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.pre_checkout_query
+    await query.answer(ok=True)
+
+async def successful_payment_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    database.set_premium(user_id)
+    await update.message.reply_text("✅ Payment Successful! You now have unlimited Premium access.")
+
+# --- Background Bot Task ---
+@app.on_event("startup")
+async def start_bot():
+    token = os.getenv("TELEGRAM_TOKEN")
+    application = ApplicationBuilder().token(token).build()
     
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_menu))
+    application.add_handler(CommandHandler("macro", macro_analysis))
+    application.add_handler(PreCheckoutQueryHandler(precheckout_callback))
+    application.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment_callback))
     
-    application.run_polling()
-
-if __name__ == "__main__":
-    main()
+    await application.initialize()
+    await application.start()
+    asyncio.create_task(application.updater.start_polling())
