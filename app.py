@@ -1,6 +1,5 @@
 import os
 import asyncio
-import time
 from fastapi import FastAPI
 from telegram import Update, LabeledPrice
 from telegram.ext import ApplicationBuilder, CommandHandler, PreCheckoutQueryHandler, MessageHandler, filters, ContextTypes
@@ -15,9 +14,61 @@ app = FastAPI()
 def health(): 
     return {"status": "Macro Analysis Bot Active"}
 
-# ... [Keep your handlers: start, macro_analysis, etc. exactly as they are] ...
+# --- Payment Config ---
+STARS_PRICE = 800  # Monthly Premium
 
-# --- Background Bot Task ---
+# --- Bot Handler Functions (MUST be defined BEFORE start_bot) ---
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    status = database.check_user_status(user_id)
+    
+    msg = "Welcome to the **MicroAnalysis Macro Terminal**. 🔬\n\n"
+    if status == "trial":
+        msg += "Your 24-hour Professional Trial is **ACTIVE**."
+    elif status == "expired":
+        msg += "Your trial has expired. Upgrade to Premium for 800 Stars to continue."
+    
+    await update.message.reply_text(msg, parse_mode='Markdown')
+
+async def macro_analysis(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    status = database.check_user_status(user_id)
+    
+    if status == "expired":
+        await send_upgrade_invoice(update, context)
+        return
+
+    symbol = context.args[0].upper() if context.args else "EURUSD"
+    analysis = MacroStrategist.get_market_bias(symbol)
+    chart_path = MacroStrategist.generate_chart(symbol)
+
+    await update.message.reply_photo(
+        photo=open(chart_path, 'rb'),
+        caption=f"**{analysis['symbol']} Analysis**\nPrice: {analysis['price']}\nBias: {analysis['bias']}\n\n_{analysis['interpretation']}_",
+        parse_mode='Markdown'
+    )
+
+async def send_upgrade_invoice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await context.bot.send_invoice(
+        chat_id=update.effective_chat.id,
+        title="Premium Macro Access",
+        description="Unlock unlimited professional analysis and charts for 30 days.",
+        payload="premium_subscription",
+        currency="XTR",
+        prices=[LabeledPrice("Monthly Subscription", STARS_PRICE)],
+        provider_token=""  # Empty for Telegram Stars
+    )
+
+async def precheckout_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.pre_checkout_query
+    await query.answer(ok=True)
+
+async def successful_payment_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    database.set_premium(user_id)
+    await update.message.reply_text("✅ Payment Successful! You now have unlimited Premium access.")
+
+# --- Background Bot Task (MUST be AFTER all handlers) ---
 @app.on_event("startup")
 async def start_bot():
     token = os.getenv("TELEGRAM_TOKEN", "").strip()
@@ -27,13 +78,11 @@ async def start_bot():
     
     print("🌐 Initializing Bot Connection...")
     
-    # 🛡️ Retry Logic for Network Stability
     max_retries = 5
     for attempt in range(max_retries):
         try:
-            # ⏳ Wait 2 seconds for network stack to ready up (Critical for HF Spaces)
             if attempt == 0:
-                await asyncio.sleep(2) 
+                await asyncio.sleep(2)  # Wait for network stack
                 
             application = ApplicationBuilder().token(token).build()
             
@@ -44,18 +93,16 @@ async def start_bot():
             
             await application.initialize()
             await application.start()
-            
-            # Start polling in background
             asyncio.create_task(application.updater.start_polling())
             
             print("✅ Bot Connected Successfully!")
-            return # Exit function on success
+            return
             
         except NetworkError as e:
             print(f"⚠️ Network Error (Attempt {attempt + 1}/{max_retries}): {e}")
             if attempt == max_retries - 1:
-                raise # Fail completely after all retries
-            await asyncio.sleep(5) # Wait before retry
+                raise
+            await asyncio.sleep(5)
         except Exception as e:
             print(f"❌ Unexpected Error: {e}")
             raise
